@@ -422,6 +422,7 @@ _correct_answer_test = SUM(testresult[is_correct])
 ```
 _test_rating = SUMX(testresult,[is_correct] * [question_contribution])
 ```
+```
 question_contribution = 
 SUMMARIZE(
     'test', 
