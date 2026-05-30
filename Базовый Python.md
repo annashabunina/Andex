@@ -235,6 +235,54 @@ class NotificationService:
 Пример письма:
 <img width="1477" height="633" alt="image" src="https://github.com/user-attachments/assets/1f6ff383-89b2-4c94-b208-b3ac17846230" />
 
+Основной скрипт:
+```sql
+def main():
+
+    logger = Logger().setup_logging()
+    logger.info("Скрипт запущен. Начинаем получение данных из API...")
+    
+    api_client = APIClient(CLIENT, CLIENT_KEY,API_URL)
+    processor = DataProcessor()
+    db_manager = DatabaseManager(HOST, PORT, DATABASE, USER, PASSWORD)
+    report_gen = ReportGenerator()
+    
+    notifier = NotificationService()
+    
+    try:
+        # Имитация запроса к API
+        logger.info("Отправляем запрос к API грейдера...")
+        raw_data = api_client.fetch_data(START, END)
+        #print(raw_data)
+        logger.info("Данные успешно получены из API")
+    
+        # Имитация обработки данных
+        logger.info("Начинаем обработку и валидацию данных...")
+        processed_data = [processor.parse(record) for record in raw_data]
+        logger.info("Данные обработаны и валидированы")
+    
+        # Имитация загрузки в БД
+        logger.info("Загружаем данные в PostgreSQL...")
+        db_manager.insert_records(processed_data)
+        logger.info("Данные успешно загружены в PostgreSQL")
+    
+        # Имитация агрегации и выгрузки в Google Sheets
+        logger.info("Формируем ежедневный отчёт...")
+        report_metrics = report_gen.aggregate_daily_metrics(processed_data)
+        report_gen.export_to_sheets(report_metrics, SERVICE_ACCOUNT_FILE, SHEET_ID)
+        logger.info("Отчёт сформирован и выгружен в Google Sheets")
+        
+        logger.info("Отправляем отчет по почте...")
+        notifier.send_email(SENDER_EMAIL, PASSWORD_EMAIL, RECIPIENT, report_metrics)
+        logger.info("Письма отправлены")
+        logging.shutdown()
+	except Exception as e:
+        logger.error(f"Произошла ошибка: {str(e)}")
+        print(e)
+
+    finally:
+        logger.info("Работа скрипта завершена")
+```
 
 ## Технологический стек
 - **Язык программирования**: Python 3.x.
