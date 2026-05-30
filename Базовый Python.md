@@ -82,6 +82,163 @@
 * класс `APIClient` — отвечает за запросы к API и пагинацию;
 * класс `DataProcessor` — парсит passback_params, валидирует данные;
 * класс `DatabaseManager` — управляет подключением к PostgreSQL и загрузкой данных;
-* класс `Logger` — настраивает логирование и ротацию логов;
+* класс `Logger` — настраивает логирование;
 * класс `ReportGenerator` — агрегирует данные и выгружает в Google Sheets;
 * класс `NotificationService` — отправляет email‑уведомления.
+
+
+### Этап 1. Получение данных из API
+- Использована библиотека requests для отправки GET‑запросов к endpoint API.
+```sql
+class APIClient:
+    def __init__(self, client, client_key: str, api_url: str) -> None:
+        self.client = client
+        self.client_key = client_key
+        self.api_url = api_url
+
+    def fetch_data(self, start, end):
+        # Запрос к API, обработка пагинации
+        data = {
+            'client': self.client,
+            'client_key': self.client_key,
+            'start': start,
+            'end': end
+        }
+        return requests.get(self.api_url, params=data).json()
+```
+
+### Этап 2. Обработка и валидация данных
+Распарсен `passback_params` (JSON‑строка внутри ответа API) для извлечения:
+- oauth_consumer_key;
+- lis_result_sourcedid;
+- lis_outcome_service_url.
+
+Валидация типов данных:
+user_id — строка;
+is_correct — булево или null;
+created_at — формат ISO 8601.
+
+### Этап 3. Загрузка в PostgreSQL
+- Подключение через psycopg2.
+- Пакетная вставка данных (executemany) для повышения производительности.
+```sql
+    def insert_records(self, records):
+        # Пакетная вставка в PostgreSQL
+        with self.conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                    INSERT INTO grades (
+                        user_id, 
+                        oauth_consumer_key, 
+                        lis_result_sourcedid, 
+                        lis_outcome_service_url, 
+                        is_correct, 
+                        attempt_type, 
+                        created_at) 
+                    VALUES (%s, %s, %s, %s, %s,%s,%s)
+                """, 
+                [
+                    (
+                        record["user_id"], 
+                        record["oauth_consumer_key"], 
+                        record["lis_result_sourcedid"], 
+                        record["lis_outcome_service_url"], 
+                        record["is_correct"], 
+                        record["attempt_type"], 
+                        record["created_at"],
+                    )
+                    for record in records
+                ]
+            )
+            self.conn.commit()
+```
+### Этап 4. Логирование
+Настроена библиотека logging с форматом:
+[%(asctime)s]: (levelname)s: %(message)s
+Создан функция для удаления файлов старше 3 дней.
+```sql
+class Logger:
+    
+    def __init__(self, log_dir="grades_logs"):
+        self.log_dir = log_dir
+        self.logger = None
+        
+    def setup_logging(self):
+        # Настройка логирования и ротации
+        logging.basicConfig(
+            filename=f'{self.log_dir}/log_{str(datetime.now().date())}.txt',
+            format='%(asctime)s: %(levelname)s: %(message)s',
+            level=logging.INFO,
+            encoding='utf-8',
+            datefmt='%Y-%m-%d %H:%M:%S')
+        self.delete_old_files()
+        return logging
+                
+    def delete_old_files(self):
+        date1 = datetime.now().date()
+        date2 = date1 - timedelta(days=1)
+        date3 = date2 - timedelta(days=1)
+        files = list(Path(self.log_dir).glob('*'))
+        files = [f for f in files if f.is_file()]
+        for file in files:
+            if not re.match(rf'{self.log_dir}\\log_({date1}|{date2}|{date3}).txt', str(file)):
+                os.remove(file)
+```
+### Этап 5. Агрегация и выгрузка в Google Sheets
+
+Использование gspread для записи в Google Sheets (аутентификация через credentials).
+```sql
+    def export_to_sheets(self, metrics, service_account_file, sheet_id):
+        # Выгрузка в Google Sheets
+        SCOPES = [
+                'https://www.googleapis.com/auth/spreadsheets',
+                'https://www.googleapis.com/auth/drive'
+            ]
+        creds = Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open_by_key(sheet_id)
+        worksheet = spreadsheet.sheet1
+        new_row = []
+        today = datetime.today().strftime("%Y-%m-%d")
+        new_row.append(today)
+        for key in ["DAU", "attempts_total", "submits_correct", "submits_incorrect", "submits_total", "runs"]:
+            new_row.append(metrics[key])
+        worksheet.append_row(new_row)
+```
+### Этап 6. Отправка email‑уведомлений
+
+Настройка SMTP‑сервера через smtplib и ssl (Gmail или корпоративный сервер).
+Формирование письма с:
+* темой: «Отчёт по обработке данных грейдера — [дата]»;
+* телом письма: метрики, ссылка на отчет GoogleSheets
+
+```sql
+class NotificationService:
+    def send_email(self, sender_email, password, recipient, metrics):
+        msg = EmailMessage()
+        today = datetime.today()
+        subject = f"Отчет по грейдеру за {today}"   
+        message = self.generate_email(metrics)
+        msg.set_content(message)
+        msg['Subject'] = subject
+        msg['From'] = sender_email
+        msg['To'] = recipient
+        smtp_server = "smtp.mail.ru"
+        port = 465
+        context = ssl.create_default_context()
+
+        with smtplib.SMTP_SSL(smtp_server, port, context=context) as server:
+            server.login(sender_email, password)
+            server.send_message(msg)
+```
+
+Пример письма:
+<img width="1477" height="633" alt="image" src="https://github.com/user-attachments/assets/1f6ff383-89b2-4c94-b208-b3ac17846230" />
+
+
+## Технологический стек
+- **Язык программирования**: Python 3.x.
+- **Базы данных**: PostgreSQL.
+- **Библиотеки Python**: requests, psycopg2, logging, gspread, smtplib, ssl.
+- **API**: REST API грейдера, Google Sheets API.
+- **Инструменты**: Google Sheets, SMTP‑сервер (Gmail/корпоративный).
