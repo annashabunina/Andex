@@ -89,7 +89,7 @@
 
 ### Этап 1. Получение данных из API
 - Использована библиотека requests для отправки GET‑запросов к endpoint API.
-```sql
+```python
 class APIClient:
     def __init__(self, client, client_key: str, api_url: str) -> None:
         self.client = client
@@ -197,6 +197,7 @@ class Logger:
 ```
 
 Файл log:
+
 <img width="795" height="273" alt="image" src="https://github.com/user-attachments/assets/386558a2-9434-429a-ba5e-be773807b295" />
 
 
