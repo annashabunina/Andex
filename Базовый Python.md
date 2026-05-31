@@ -55,7 +55,7 @@
 	  lis_outcome_service_url varchar NULL,
 	  is_correct int NULL,
 	  attempt_type varchar NULL,
-	  created_at varchar NULL);
+	  created_at timestamp NULL);
 
 3. **Google Sheets** — таблица с ежедневными агрегированными данными:
 * `attempts_total` — общее количество попыток;
@@ -73,9 +73,9 @@
 
 5. **Уведомления** — email с отчётом, отправляемый после завершения работы скрипта:
 * статус выполнения скрипта (успешно/с ошибками);
-* количество обработанных записей (всего, успешно загруженных, пропущенных из‑за ошибок);
+* продуктовые метрики;
 * ссылки на отчёт в Google Sheets;
-* временные метрики (время начала и завершения работы, общее время выполнения).
+* временные метрики.
 
   ## Реализация
   ### Структура классов
@@ -114,14 +114,25 @@ class APIClient:
 - lis_outcome_service_url.
 
 Валидация типов данных:
-user_id — строка;
-is_correct — булево или null;
-created_at — формат ISO 8601.
+is_correct — int;
+created_at — datetime.
+
+```python
+    def validate_record(self, record: dict):
+        types = {
+            "is_correct": int,
+            "created_at": datetime
+        }
+
+        for key, value in record.items():
+            if not isinstance(value, types.get(key, str)):
+                raise ValueError()
+```
 
 ### Этап 3. Загрузка в PostgreSQL
 - Подключение через psycopg2.
 - Пакетная вставка данных (executemany) для повышения производительности.
-```sql
+```python
     def insert_records(self, records):
         # Пакетная вставка в PostgreSQL
         with self.conn.cursor() as cursor:
@@ -184,10 +195,15 @@ class Logger:
             if not re.match(rf'{self.log_dir}\\log_({date1}|{date2}|{date3}).txt', str(file)):
                 os.remove(file)
 ```
+
+Файл log:
+<img width="795" height="273" alt="image" src="https://github.com/user-attachments/assets/386558a2-9434-429a-ba5e-be773807b295" />
+
+
 ### Этап 5. Агрегация и выгрузка в Google Sheets
 
 Использование gspread для записи в Google Sheets (аутентификация через credentials).
-```sql
+```python
     def export_to_sheets(self, metrics, service_account_file, sheet_id):
         # Выгрузка в Google Sheets
         SCOPES = [
@@ -205,6 +221,11 @@ class Logger:
             new_row.append(metrics[key])
         worksheet.append_row(new_row)
 ```
+
+Лист GoogleSheets:
+<img width="927" height="187" alt="image" src="https://github.com/user-attachments/assets/8553f611-ef4c-40bf-9563-0a2e9c753bb1" />
+
+
 ### Этап 6. Отправка email‑уведомлений
 
 Настройка SMTP‑сервера через smtplib и ssl (Gmail или корпоративный сервер).
@@ -212,7 +233,7 @@ class Logger:
 * темой: «Отчёт по обработке данных грейдера — [дата]»;
 * телом письма: метрики, ссылка на отчет GoogleSheets
 
-```sql
+```python
 class NotificationService:
     def send_email(self, sender_email, password, recipient, metrics):
         msg = EmailMessage()
@@ -236,7 +257,7 @@ class NotificationService:
 <img width="1477" height="633" alt="image" src="https://github.com/user-attachments/assets/1f6ff383-89b2-4c94-b208-b3ac17846230" />
 
 Основной скрипт:
-```sql
+```python
 def main():
 
     logger = Logger().setup_logging()
