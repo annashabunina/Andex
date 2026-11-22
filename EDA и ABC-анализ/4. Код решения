@@ -1,38 +1,27 @@
+# Импорт библиотек для анализа данных и визуализации.
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
 
-# Настройка
-pd.set_option('display.float_format', '{:.2f}'.format)
-pd.set_option('display.max_columns', 40)
-plt.style.use('ggplot')
 
-# Построение графиков
-def plot_mosaic(plot_functions, layout, figsize=(18, 14)):
-    fig, ax = plt.subplot_mosaic(
-        layout,
-        figsize=figsize
-    )
+from IPython.display import display
 
-    results = {}
 
-    for key, plot_func in plot_functions.items():
-        results[key] = plot_func(ax[key])
+# Настройки отображения таблиц и графиков.
+pd.set_option("display.float_format", "{:.2f}".format)
+pd.set_option("display.max_columns", 40)
+plt.style.use("ggplot")
 
-    plt.tight_layout()
-    plt.show()
 
-    return results
+# Загрузка таблиц заказов и товаров, объединение по product_id.
+orders = pd.read_excel("orders.xlsx")
+products = pd.read_excel("products.xlsx")
+df = orders.merge(products, on="product_id", how="inner")
 
-# Загрузка данных
-orders = pd.read_excel('orders.xlsx')
-products = pd.read_excel('products.xlsx')
-df = orders.merge(products, on='product_id', how='inner')
-df.head(1)
 
-# Функция рисования графиков
+# Универсальная функция для размещения нескольких графиков в одной фигуре.
 def plot_mosaic(plot_functions, layout, figsize=(18, 14)):
     fig, ax = plt.subplot_mosaic(
         layout,
@@ -45,16 +34,20 @@ def plot_mosaic(plot_functions, layout, figsize=(18, 14)):
     plt.show()
     return results
 
-print('Размер датасета:', df.shape)
+
+# Проверка структуры данных, пропусков и дубликатов.
+print("Размер датасета:", df.shape)
 display(pd.DataFrame({
-    'Тип': df.dtypes,
-    'Количество уникальных': df.nunique(),
-    'Пропуски': df.isna().sum()
+    "Тип": df.dtypes,
+    "Количество уникальных": df.nunique(),
+    "Пропуски": df.isna().sum()
 }))
+
 
 print("Полных дубликатов строк:", df.duplicated().sum())
 print("Дубликатов по order_id + product_id:",
       df.duplicated(subset=["order_id", "product_id"]).sum())
+
 
 checks = pd.Series({
     "quantity <= 0": (df["quantity"] <= 0).sum(),
@@ -64,6 +57,7 @@ checks = pd.Series({
 
 display(checks.to_frame())
 
+
 display(pd.Series({
     "Минимальная дата": df["accepted_at"].min().date(),
     "Максимальная дата": df["accepted_at"].max().date(),
@@ -72,9 +66,10 @@ display(pd.Series({
     "Количество уникальных дат": df["accepted_at"].dt.date.nunique()
 }, name="Значение").to_frame())
 
+
+# Выделение часа заказа для анализа активности в течение дня.
 df["hour"] = df["accepted_at"].dt.hour
 
-df.head(1)
 
 def orders_by_hour_plot(ax=None):
     if ax is None:
@@ -99,6 +94,7 @@ def orders_by_hour_plot(ax=None):
     ax.grid(axis="y", alpha=0.3)
 
     return ax
+# График: количество уникальных заказов по каждому часу.
 time_results = plot_mosaic(
     plot_functions={
         "A": orders_by_hour_plot
@@ -107,11 +103,13 @@ time_results = plot_mosaic(
     figsize=(12, 5)
 )
 
-df.head(1)
 
+# Расчёт выручки и валовой прибыли по каждой товарной позиции.
 df["revenue"] = df["price"] * df["quantity"]
 df["gross_profit"] = (df["price"] - df["cost_price"]) * df["quantity"]
 
+
+# Агрегация данных на уровне заказа и расчёт основных характеристик корзины.
 orders = df.groupby("order_id").agg(
     lines=("order_id","count"),
     products=("product_id","nunique"),
@@ -121,6 +119,7 @@ orders = df.groupby("order_id").agg(
 ).reset_index()
 
 orders.head(1)
+
 
 orders
 display(pd.Series({
@@ -132,6 +131,8 @@ display(pd.Series({
     "Минимальное количество товаров в заказе": orders["units"].min()
 }, name="Значение").to_frame())
 
+
+# Функции графиков: распределение выручки заказа, выбросы и число товаров в заказе.
 def order_revenue_hist_plot(ax=None):
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -146,6 +147,7 @@ def order_revenue_hist_plot(ax=None):
     ax.set_ylabel("Количество заказов")
     return ax
 
+
 def order_revenue_boxplot(ax=None):
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -156,6 +158,7 @@ def order_revenue_boxplot(ax=None):
     ax.set_title("Распределение стоимости заказов")
     ax.set_xlabel("Стоимость заказа, руб.")
     return ax
+
 
 def order_units_hist_plot(ax=None):
     if ax is None:
@@ -171,6 +174,8 @@ def order_units_hist_plot(ax=None):
     ax.set_ylabel("Количество заказов")
     return ax
 
+
+# Три графика по заказам: гистограмма выручки, boxplot выручки и гистограмма количества товаров.
 orders_results = plot_mosaic(
     plot_functions={
         "A": order_revenue_hist_plot,
@@ -183,14 +188,19 @@ orders_results = plot_mosaic(
     figsize=(18, 6)
 )
 
+
+# Описание размера ассортимента по товарам, подкатегориям и категориям.
 display(pd.Series({
     "Количество уникальных товаров": df["product_id"].nunique(),
     "Количество подкатегорий (level2)": df["level2"].nunique(),
     "Количество категорий (level1)": df["level1"].nunique()
 }, name="Значение").to_frame())
 
+
 df.groupby(["level1","level2"])["product_id"].nunique().to_frame().reset_index()
 
+
+# Общие финансовые и количественные показатели за анализируемый период.
 total_revenue = df["revenue"].sum()
 total_gross_profit = df["gross_profit"].sum()
 
@@ -210,6 +220,8 @@ financial_metrics = pd.Series({
 
 display(financial_metrics.to_frame())
 
+
+# Сводные показатели продаж в разрезе подкатегорий (level2).
 sales_level2 = df.groupby("level2").agg(
     revenue=("revenue", "sum"),
     gross_profit=("gross_profit", "sum"),
@@ -220,6 +232,8 @@ sales_level2 = df.groupby("level2").agg(
 
 display(sales_level2.head())
 
+
+# Функции для построения топ-10 подкатегорий по выбранному показателю.
 def plot_top10(data, metric, title, xlabel, ax):
     top10 = (
         data.nlargest(10, metric)
@@ -235,6 +249,7 @@ def plot_top10(data, metric, title, xlabel, ax):
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Подкатегория")
     return top10
+
 
 def top_revenue_plot(ax):
     return plot_top10(
@@ -272,6 +287,8 @@ def top_quantity_plot(ax):
         ax
     )
 
+
+# Четыре графика топ-10: по выручке, валовой прибыли, числу заказов и количеству проданных единиц.
 assortment_results = plot_mosaic(
     plot_functions={
         "A": top_revenue_plot,
@@ -286,6 +303,7 @@ assortment_results = plot_mosaic(
     figsize=(15, 10)
 )
 
+
 sales_level2 = sales_level2.sort_values(
     "revenue",
     ascending=False
@@ -293,6 +311,8 @@ sales_level2 = sales_level2.sort_values(
 
 display(sales_level2)
 
+
+# Графики взаимосвязей: тепловая карта корреляций и диаграмма выручки/валовой прибыли.
 def correlation_heatmap_plot(ax=None):
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 7))
@@ -333,6 +353,8 @@ def revenue_profit_plot(ax=None):
         ax.figure.tight_layout()
     return ax
 
+
+# Вывод двух графиков для оценки взаимосвязи показателей подкатегорий.
 relationships_results = plot_mosaic(
     plot_functions={
         "A": correlation_heatmap_plot,
@@ -342,12 +364,16 @@ relationships_results = plot_mosaic(
     figsize=(18, 7)
 )
 
+
+# Подготовка показателей для ABC-анализа по подкатегориям.
 abc_df = df.groupby("level2").agg(
     revenue=("revenue", "sum"),
     gross_profit=("gross_profit", "sum"),
     orders=("order_id", "nunique")
 ).reset_index()
 
+
+# Функция ABC-классификации по накопленной доле выбранного показателя.
 def perform_abc(df,index):
     cols = list(df.columns)
     cols.remove(index)
@@ -356,14 +382,16 @@ def perform_abc(df,index):
         grouped_df[f'rel_{col}'] = grouped_df[col] / sum(grouped_df[col])
         grouped_df = grouped_df.sort_values(f'rel_{col}', ascending = False)
         grouped_df[f'cumsum_{col}'] = grouped_df[f'rel_{col}'].cumsum()
-        grouped_df[f'abc_{col}'] = np.where(grouped_df[f'cumsum_{col}'] < 0.8, 'A', np.where(grouped_df[f'cumsum_{col}'] < 0.95, 'B', 'C'))
+        grouped_df[f'abc_{col}'] = np.where(grouped_df[f'cumsum_{col}'] < 0.8, "A", np.where(grouped_df[f'cumsum_{col}'] < 0.95, "B", "C"))
     abc_cols = [f'abc_{col}' for col in cols]
     grouped_df["abc_group"] = grouped_df[abc_cols].agg("".join, axis=1)
     return grouped_df[cols + abc_cols + ["abc_group"]].reset_index()
 
 
-abc_res_df = perform_abc(abc_df, "level2").reset_index()
+abc_res_df = perform_abc(abc_df, "level2")
 
+
+# График: количество подкатегорий в группах A, B и C отдельно по каждому показателю.
 def abc_counts_plot(ax=None):
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -385,8 +413,11 @@ def abc_counts_plot(ax=None):
     ax.legend(title="Показатель")
     return ax
 
+# Построение графика распределения подкатегорий по ABC-классам.
 abc_counts_plot()
 
+
+# График: тепловая карта сравнения ABC-классов по выручке, прибыли и заказам.
 def abc_comparison_plot(ax=None):
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 20))
@@ -417,8 +448,11 @@ def abc_comparison_plot(ax=None):
     ax.set_ylabel("Подкатегория")
     return ax
 
+# Построение тепловой карты ABC-классификаций.
 abc_comparison_plot()
 
+
+# Доля выручки, валовой прибыли, заказов и числа подкатегорий в каждой комбинации ABC-групп.
 group_metrics = (
     abc_res_df.groupby("abc_group")
     [["revenue", "gross_profit", "orders"]]
