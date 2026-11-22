@@ -333,34 +333,6 @@ def revenue_profit_plot(ax=None):
         ax.figure.tight_layout()
     return ax
 
-"""
-def category_revenue_share_plot(ax=None):
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 6))
-    sales_level1 = df.groupby("level1").agg(
-        revenue=("revenue", "sum")
-    ).reset_index()
-
-    sales_level1["revenue_share"] = (
-        sales_level1["revenue"] / sales_level1["revenue"].sum() * 100
-    )
-    sales_level1 = sales_level1.sort_values(
-        "revenue_share",
-        ascending=True
-    )
-
-    sns.barplot(
-        data=sales_level1,
-        x="revenue_share",
-        y="level1",
-        ax=ax
-    )
-    ax.set_title("Доля категорий в общей выручке")
-    ax.set_xlabel("Доля выручки, %")
-    ax.set_ylabel("Категория")
-    return ax
-"""
-
 relationships_results = plot_mosaic(
     plot_functions={
         "A": correlation_heatmap_plot,
