@@ -1,0 +1,466 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+
+# Настройка
+pd.set_option('display.float_format', '{:.2f}'.format)
+pd.set_option('display.max_columns', 40)
+plt.style.use('ggplot')
+
+# Построение графиков
+def plot_mosaic(plot_functions, layout, figsize=(18, 14)):
+    fig, ax = plt.subplot_mosaic(
+        layout,
+        figsize=figsize
+    )
+
+    results = {}
+
+    for key, plot_func in plot_functions.items():
+        results[key] = plot_func(ax[key])
+
+    plt.tight_layout()
+    plt.show()
+
+    return results
+
+# Загрузка данных
+orders = pd.read_excel('orders.xlsx')
+products = pd.read_excel('products.xlsx')
+df = orders.merge(products, on='product_id', how='inner')
+df.head(1)
+
+# Функция рисования графиков
+def plot_mosaic(plot_functions, layout, figsize=(18, 14)):
+    fig, ax = plt.subplot_mosaic(
+        layout,
+        figsize=figsize
+    )
+    results = {}
+    for key, plot_func in plot_functions.items():
+        results[key] = plot_func(ax[key])
+    plt.tight_layout()
+    plt.show()
+    return results
+
+print('Размер датасета:', df.shape)
+display(pd.DataFrame({
+    'Тип': df.dtypes,
+    'Количество уникальных': df.nunique(),
+    'Пропуски': df.isna().sum()
+}))
+
+print("Полных дубликатов строк:", df.duplicated().sum())
+print("Дубликатов по order_id + product_id:",
+      df.duplicated(subset=["order_id", "product_id"]).sum())
+
+checks = pd.Series({
+    "quantity <= 0": (df["quantity"] <= 0).sum(),
+    "price <= 0": (df["price"] <= 0).sum(),
+    "cost_price <= 0": (df["cost_price"] <= 0).sum()
+}, name="Количество строк")
+
+display(checks.to_frame())
+
+display(pd.Series({
+    "Минимальная дата": df["accepted_at"].min().date(),
+    "Максимальная дата": df["accepted_at"].max().date(),
+    "Минимальная дата и время": df["accepted_at"].min(),
+    "Максимальная дата и время": df["accepted_at"].max(),
+    "Количество уникальных дат": df["accepted_at"].dt.date.nunique()
+}, name="Значение").to_frame())
+
+df["hour"] = df["accepted_at"].dt.hour
+
+df.head(1)
+
+def orders_by_hour_plot(ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(12, 5))
+
+    orders_by_hour = (
+        df.groupby("hour")["order_id"]
+        .nunique()
+        .reindex(range(24), fill_value=0)
+    )
+
+    sns.barplot(
+        x=orders_by_hour.index,
+        y=orders_by_hour.values,
+        ax=ax
+    )
+
+    ax.set_title("Распределение заказов по часам")
+    ax.set_xlabel("Час")
+    ax.set_ylabel("Количество заказов")
+    ax.set_xticks(range(24))
+    ax.grid(axis="y", alpha=0.3)
+
+    return ax
+time_results = plot_mosaic(
+    plot_functions={
+        "A": orders_by_hour_plot
+    },
+    layout="A",
+    figsize=(12, 5)
+)
+
+df.head(1)
+
+df["revenue"] = df["price"] * df["quantity"]
+df["gross_profit"] = (df["price"] - df["cost_price"]) * df["quantity"]
+
+orders = df.groupby("order_id").agg(
+    lines=("order_id","count"),
+    products=("product_id","nunique"),
+    units=("quantity","sum"),
+    order_revenue=("revenue","sum"),
+    order_gross_profit=("gross_profit","sum")
+).reset_index()
+
+orders.head(1)
+
+orders
+display(pd.Series({
+    "Общее количество уникальных заказов": orders["order_id"].nunique(),
+    "Средняя выручка на заказ": orders["order_revenue"].sum() / orders["order_id"].nunique(),
+    "Медианная стоимость заказа":orders["order_revenue"].median(),
+    "Среднее количество товаров в заказе": orders["units"].sum() / orders["order_id"].nunique(),
+    "Максимальное количество товаров в заказе": orders["units"].max(),
+    "Минимальное количество товаров в заказе": orders["units"].min()
+}, name="Значение").to_frame())
+
+def order_revenue_hist_plot(ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+    sns.histplot(
+        data=orders,
+        x="order_revenue",
+        bins=40,
+        ax=ax
+    )
+    ax.set_title("Распределение стоимости заказов")
+    ax.set_xlabel("Стоимость, руб.")
+    ax.set_ylabel("Количество заказов")
+    return ax
+
+def order_revenue_boxplot(ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+    sns.boxplot(
+        x=orders["order_revenue"],
+        ax=ax
+    )
+    ax.set_title("Распределение стоимости заказов")
+    ax.set_xlabel("Стоимость заказа, руб.")
+    return ax
+
+def order_units_hist_plot(ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+    sns.histplot(
+        data=orders,
+        x="units",
+        bins=35,
+        ax=ax
+    )
+    ax.set_title("Распределение количества товаров в заказе")
+    ax.set_xlabel("Количество товаров")
+    ax.set_ylabel("Количество заказов")
+    return ax
+
+orders_results = plot_mosaic(
+    plot_functions={
+        "A": order_revenue_hist_plot,
+        "C": order_revenue_boxplot,
+        "B": order_units_hist_plot
+    },
+    layout="""
+        ABC
+    """,
+    figsize=(18, 6)
+)
+
+display(pd.Series({
+    "Количество уникальных товаров": df["product_id"].nunique(),
+    "Количество подкатегорий (level2)": df["level2"].nunique(),
+    "Количество категорий (level1)": df["level1"].nunique()
+}, name="Значение").to_frame())
+
+df.groupby(["level1","level2"])["product_id"].nunique().to_frame().reset_index()
+
+total_revenue = df["revenue"].sum()
+total_gross_profit = df["gross_profit"].sum()
+
+total_margin = (
+    total_gross_profit / total_revenue * 100
+    if total_revenue != 0 else np.nan
+)
+
+financial_metrics = pd.Series({
+    "Общая выручка": total_revenue,
+    "Общая валовая прибыль": total_gross_profit,
+    "Валовая маржа, %": total_margin,
+    "Количество заказов": df["order_id"].nunique(),
+    "Количество проданных единиц": df["quantity"].sum(),
+    "Количество подкатегорий": df["level2"].nunique()
+}, name="Значение")
+
+display(financial_metrics.to_frame())
+
+sales_level2 = df.groupby("level2").agg(
+    revenue=("revenue", "sum"),
+    gross_profit=("gross_profit", "sum"),
+    quantity=("quantity", "sum"),
+    orders=("order_id", "nunique"),
+    products=("product_id", "nunique")
+).reset_index()
+
+display(sales_level2.head())
+
+def plot_top10(data, metric, title, xlabel, ax):
+    top10 = (
+        data.nlargest(10, metric)
+        .sort_values(metric, ascending=True)
+    )
+    sns.barplot(
+        data=top10,
+        x=metric,
+        y="level2",
+        ax=ax
+    )
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Подкатегория")
+    return top10
+
+def top_revenue_plot(ax):
+    return plot_top10(
+        sales_level2,
+        "revenue",
+        "Топ-10 подкатегорий по выручке",
+        "Выручка",
+        ax
+    )
+
+def top_profit_plot(ax):
+    return plot_top10(
+        sales_level2,
+        "gross_profit",
+        "Топ-10 подкатегорий по валовой прибыли",
+        "Валовая прибыль",
+        ax
+    )
+
+def top_orders_plot(ax):
+    return plot_top10(
+        sales_level2,
+        "orders",
+        "Топ-10 подкатегорий по количеству заказов",
+        "Количество заказов",
+        ax
+    )
+
+def top_quantity_plot(ax):
+    return plot_top10(
+        sales_level2,
+        "quantity",
+        "Топ-10 подкатегорий по количеству проданных единиц",
+        "Количество единиц",
+        ax
+    )
+
+assortment_results = plot_mosaic(
+    plot_functions={
+        "A": top_revenue_plot,
+        "B": top_profit_plot,
+        "C": top_orders_plot,
+        "D": top_quantity_plot
+    },
+    layout="""
+        AB
+        CD
+    """,
+    figsize=(15, 10)
+)
+
+sales_level2 = sales_level2.sort_values(
+    "revenue",
+    ascending=False
+)
+
+display(sales_level2)
+
+def correlation_heatmap_plot(ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 7))
+    corr_data = sales_level2[
+        ["revenue", "gross_profit", "quantity", "orders", "products"]
+    ]
+    corr_matrix = corr_data.corr()
+    sns.heatmap(
+        corr_matrix,
+        annot=True,
+        cmap="coolwarm",
+        fmt=".2f",
+        center=0,
+        linewidths=0.5,
+        ax=ax
+    )
+    ax.set_title("Корреляция показателей продаж")
+    return ax
+
+def revenue_profit_plot(ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+    sns.scatterplot(
+        data=sales_level2,
+        x="revenue",
+        y="gross_profit",
+        size="orders",
+        sizes=(30, 300),
+        alpha=0.7,
+        ax=ax
+    )
+    ax.set_title("Выручка и валовая прибыль по подкатегориям")
+    ax.set_xlabel("Выручка")
+    ax.set_ylabel("Валовая прибыль")
+    ax.legend(title="Количество заказов")
+    if ax.figure:
+        ax.figure.tight_layout()
+    return ax
+
+"""
+def category_revenue_share_plot(ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+    sales_level1 = df.groupby("level1").agg(
+        revenue=("revenue", "sum")
+    ).reset_index()
+
+    sales_level1["revenue_share"] = (
+        sales_level1["revenue"] / sales_level1["revenue"].sum() * 100
+    )
+    sales_level1 = sales_level1.sort_values(
+        "revenue_share",
+        ascending=True
+    )
+
+    sns.barplot(
+        data=sales_level1,
+        x="revenue_share",
+        y="level1",
+        ax=ax
+    )
+    ax.set_title("Доля категорий в общей выручке")
+    ax.set_xlabel("Доля выручки, %")
+    ax.set_ylabel("Категория")
+    return ax
+"""
+
+relationships_results = plot_mosaic(
+    plot_functions={
+        "A": correlation_heatmap_plot,
+        "B": revenue_profit_plot
+    },
+    layout="AB",
+    figsize=(18, 7)
+)
+
+abc_df = df.groupby("level2").agg(
+    revenue=("revenue", "sum"),
+    gross_profit=("gross_profit", "sum"),
+    orders=("order_id", "nunique")
+).reset_index()
+
+def perform_abc(df,index):
+    cols = list(df.columns)
+    cols.remove(index)
+    grouped_df = df.groupby(index).agg({col: "sum" for col in cols})
+    for col in cols:
+        grouped_df[f'rel_{col}'] = grouped_df[col] / sum(grouped_df[col])
+        grouped_df = grouped_df.sort_values(f'rel_{col}', ascending = False)
+        grouped_df[f'cumsum_{col}'] = grouped_df[f'rel_{col}'].cumsum()
+        grouped_df[f'abc_{col}'] = np.where(grouped_df[f'cumsum_{col}'] < 0.8, 'A', np.where(grouped_df[f'cumsum_{col}'] < 0.95, 'B', 'C'))
+    abc_cols = [f'abc_{col}' for col in cols]
+    grouped_df["abc_group"] = grouped_df[abc_cols].agg("".join, axis=1)
+    return grouped_df[cols + abc_cols + ["abc_group"]].reset_index()
+
+
+abc_res_df = perform_abc(abc_df, "level2").reset_index()
+
+def abc_counts_plot(ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+    abc_counts = pd.concat([
+        abc_res_df["abc_revenue"].value_counts().rename("Выручка"),
+        abc_res_df["abc_gross_profit"].value_counts().rename("Валовая прибыль"),
+        abc_res_df["abc_orders"].value_counts().rename("Количество заказов")
+    ], axis=1).fillna(0)
+    abc_counts = abc_counts.reindex(["A", "B", "C"]).fillna(0)
+    abc_counts.plot(
+        kind="bar",
+        ax=ax,
+        width=0.8
+    )
+    ax.set_title("Количество подкатегорий в ABC-группах")
+    ax.set_xlabel("ABC-группа")
+    ax.set_ylabel("Количество подкатегорий")
+    ax.set_xticklabels(["A", "B", "C"], rotation=0)
+    ax.legend(title="Показатель")
+    return ax
+
+abc_counts_plot()
+
+def abc_comparison_plot(ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 20))
+    abc_comparison = abc_res_df.set_index("level2")[
+        ["abc_revenue", "abc_gross_profit", "abc_orders"]
+    ].copy()
+    abc_comparison.columns = [
+        "Выручка",
+        "Валовая прибыль",
+        "Количество заказов"
+    ]
+    abc_numeric = abc_comparison.replace({
+        "A": 3,
+        "B": 2,
+        "C": 1
+    })
+    sns.heatmap(
+        abc_numeric,
+        annot=abc_comparison,
+        fmt="",
+        cmap="RdYlGn",
+        linewidths=0.5,
+        cbar=False,
+        ax=ax
+    )
+    ax.set_title("Сравнение ABC-классификаций по трём показателям")
+    ax.set_xlabel("Показатель")
+    ax.set_ylabel("Подкатегория")
+    return ax
+
+abc_comparison_plot()
+
+group_metrics = (
+    abc_res_df.groupby("abc_group")
+    [["revenue", "gross_profit", "orders"]]
+    .sum()
+)
+group_share = (
+    group_metrics.div(group_metrics.sum(axis=0)) * 100
+).round(2)
+group_share["Количество подкатегорий"] = (
+    abc_res_df.groupby("abc_group").size()
+)
+group_share["Доля подкатегорий, %"] = (
+    group_share["Количество подкатегорий"]
+    / len(abc_res_df) * 100
+).round(2)
+
+group_share.sort_index()
