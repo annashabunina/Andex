@@ -1,0 +1,567 @@
+import ast
+import logging
+import os
+import smtplib
+import ssl
+import requests
+import psycopg2
+import gspread
+
+from pathlib import Path
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
+from dotenv import load_dotenv
+from email.message import EmailMessage
+from google.oauth2.service_account import Credentials
+
+
+load_dotenv(override=True)
+
+
+# ============================================================
+# LOGGER
+# ============================================================
+
+class Logger:
+
+    def __init__(self, log_dir=None):
+        self.log_dir = log_dir or os.getenv("LOG_DIR", "grades_logs")
+        self.retention_days = int(os.getenv("LOG_RETENTION_DAYS", 3))
+        self.logger = None
+
+    def setup_logging(self):
+        Path(self.log_dir).mkdir(parents=True, exist_ok=True)
+
+        self.logger = logging.getLogger("ETL")
+        self.logger.setLevel(logging.INFO)
+
+        if not self.logger.handlers:
+            handler = logging.FileHandler(
+                f"{self.log_dir}/log_{datetime.now().date()}.txt",
+                encoding="utf-8"
+            )
+
+            formatter = logging.Formatter(
+                "%(asctime)s: %(levelname)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S"
+            )
+
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+
+        self.delete_old_files()
+
+        return self.logger
+
+    def delete_old_files(self):
+        files = Path(self.log_dir).glob("*")
+        cutoff_date = datetime.now() - timedelta(days=self.retention_days)
+
+        for file in files:
+            if file.is_file():
+                file_date = datetime.fromtimestamp(file.stat().st_mtime)
+
+                if file_date < cutoff_date:
+                    file.unlink()
+
+
+# ============================================================
+# API CLIENT
+# ============================================================
+
+class APIClient:
+
+    def __init__(self, client: str, client_key: str, api_url: str, logger):
+        self.client = client
+        self.client_key = client_key
+        self.api_url = api_url
+        self.logger = logger
+
+    def fetch_data(self, start: str, end: str):
+        params = {
+            "client": self.client,
+            "client_key": self.client_key,
+            "start": start,
+            "end": end
+        }
+    
+        max_attempts = 3
+    
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = requests.get(
+                    self.api_url,
+                    params=params,
+                    timeout=120
+                )
+    
+                response.raise_for_status()
+                data = response.json()
+    
+                if not isinstance(data, list):
+                    raise ValueError("API вернул данные не в формате списка.")
+    
+                if not all(isinstance(record, dict) for record in data):
+                    raise ValueError("Некоторые записи не являются словарями.")
+    
+                self.logger.info(
+                    f"Запрос выполнен успешно. "
+                    f"Получено записей: {len(data)}."
+                )
+    
+                return data
+    
+            except requests.exceptions.RequestException as e:
+                self.logger.warning(
+                    f"Попытка {attempt}/{max_attempts} не удалась: {e}"
+                )
+    
+                if attempt == max_attempts:
+                    self.logger.exception(
+                        "Не удалось получить данные из API после повторных попыток."
+                    )
+                    raise
+    
+                import time
+                time.sleep(5)
+    
+            except Exception:
+                self.logger.exception("Ошибка при обработке ответа API.")
+                raise
+    
+
+# ============================================================
+# DATA PROCESSOR
+# ============================================================
+
+class DataProcessor:
+
+    def __init__(self, logger):
+        self.logger = logger
+
+    def parse(self, record: dict) -> dict:
+        try:
+            parsed_dict = record.get("passback_params")
+
+            if parsed_dict:
+                parsed_dict = ast.literal_eval(parsed_dict)
+            else:
+                parsed_dict = {}
+
+            if not isinstance(parsed_dict, dict):
+                raise ValueError(
+                    "passback_params должен содержать словарь."
+                )
+
+            parsed_record = {
+                "user_id": record.get("lti_user_id"),
+                "oauth_consumer_key": parsed_dict.get("oauth_consumer_key"),
+                "lis_result_sourcedid": parsed_dict.get("lis_result_sourcedid"),
+                "lis_outcome_service_url": parsed_dict.get("lis_outcome_service_url"),
+                "is_correct": record.get("is_correct"),
+                "attempt_type": record.get("attempt_type"),
+                "created_at": datetime.strptime(
+                    record["created_at"],
+                    "%Y-%m-%d %H:%M:%S.%f"
+                )
+            }
+
+            return parsed_record
+
+        except Exception:
+            self.logger.exception("Ошибка при обработке записи.")
+            raise
+
+    def validate_record(self, record: dict) -> None:
+        try:
+            required_fields = [
+                "user_id",
+                "attempt_type",
+                "created_at"
+            ]
+
+            if any(record.get(field) is None for field in required_fields):
+                raise ValueError("Отсутствуют обязательные поля.")
+
+            if record["is_correct"] not in (None, 0, 1):
+                raise ValueError("Некорректное значение is_correct.")
+
+            if not isinstance(record["created_at"], datetime):
+                raise ValueError("Некорректный тип created_at.")
+
+            string_fields = [
+                "user_id",
+                "oauth_consumer_key",
+                "lis_result_sourcedid",
+                "lis_outcome_service_url",
+                "attempt_type"
+            ]
+
+            if any(
+                value is not None and not isinstance(value, str)
+                for field in string_fields
+                for value in [record.get(field)]
+            ):
+                raise ValueError(
+                    "Некорректный тип одного из текстовых полей."
+                )
+
+        except Exception:
+            self.logger.exception("Ошибка валидации записи.")
+            raise
+
+
+# ============================================================
+# DATABASE MANAGER
+# ============================================================
+
+class DatabaseManager:
+
+    def __init__(self, host, port, database, user, password, logger):
+        self.logger = logger
+
+        try:
+            self.conn = psycopg2.connect(
+                database=database,
+                user=user,
+                password=password,
+                host=host,
+                port=port
+            )
+
+        except Exception:
+            self.logger.exception("Ошибка подключения к PostgreSQL.")
+            raise
+
+    def insert_records(self, records):
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO grades (
+                        user_id,
+                        oauth_consumer_key,
+                        lis_result_sourcedid,
+                        lis_outcome_service_url,
+                        is_correct,
+                        attempt_type,
+                        created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    [
+                        (
+                            record["user_id"],
+                            record["oauth_consumer_key"],
+                            record["lis_result_sourcedid"],
+                            record["lis_outcome_service_url"],
+                            record["is_correct"],
+                            record["attempt_type"],
+                            record["created_at"]
+                        )
+                        for record in records
+                    ]
+                )
+
+            self.conn.commit()
+
+            self.logger.info(
+                f"В PostgreSQL добавлено записей: {len(records)}."
+            )
+
+        except Exception:
+            self.conn.rollback()
+            self.logger.exception(
+                "Ошибка при записи данных в PostgreSQL."
+            )
+            raise
+
+    def close(self):
+        if not self.conn.closed:
+            self.conn.close()
+
+
+# ============================================================
+# REPORT GENERATOR
+# ============================================================
+
+class ReportGenerator:
+
+    def __init__(self, logger):
+        self.logger = logger
+
+    def aggregate_daily_metrics(self, records):
+        try:
+            metrics = {}
+
+            metrics["attempts_total"] = len(records)
+
+            users = [
+                record["user_id"]
+                for record in records
+            ]
+
+            metrics["DAU"] = len(set(users))
+
+            metrics["submits_correct"] = sum(
+                1 for record in records
+                if record["attempt_type"] == "submit"
+                and record["is_correct"] == 1
+            )
+
+            metrics["submits_incorrect"] = sum(
+                1 for record in records
+                if record["attempt_type"] == "submit"
+                and record["is_correct"] == 0
+            )
+
+            metrics["submits_total"] = (
+                metrics["submits_correct"]
+                + metrics["submits_incorrect"]
+            )
+
+            metrics["runs"] = sum(
+                1 for record in records
+                if record["attempt_type"] == "run"
+            )
+
+            return metrics
+
+        except Exception:
+            self.logger.exception("Ошибка при расчёте метрик.")
+            raise
+
+    def export_to_sheets(self, metrics, service_account_file, sheet_id):
+        try:
+            scopes = [
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive"
+            ]
+
+            creds = Credentials.from_service_account_file(
+                service_account_file,
+                scopes=scopes
+            )
+
+            client = gspread.authorize(creds)
+            spreadsheet = client.open_by_key(sheet_id)
+            worksheet = spreadsheet.sheet1
+
+            new_row = [
+                datetime.today().strftime("%d.%m.%Y"),
+                metrics["DAU"],
+                metrics["attempts_total"],
+                metrics["submits_correct"],
+                metrics["submits_incorrect"],
+                metrics["submits_total"],
+                metrics["runs"]
+            ]
+
+            worksheet.append_row(new_row)
+
+            self.logger.info(
+                "Данные успешно выгружены в Google Sheets."
+            )
+
+        except Exception:
+            self.logger.exception(
+                "Ошибка при выгрузке данных в Google Sheets."
+            )
+            raise
+
+
+# ============================================================
+# NOTIFICATION SERVICE
+# ============================================================
+
+class NotificationService:
+
+    def __init__(self, logger):
+        self.logger = logger
+
+    def send_email(self, sender_email, password, recipient, metrics):
+        try:
+            msg = EmailMessage()
+
+            today = datetime.today().strftime("%d.%m.%y")
+            subject = f"Отчет по грейдеру за {today}"
+            message = self.generate_email(metrics, today)
+
+            msg.set_content(message)
+            msg["Subject"] = subject
+            msg["From"] = sender_email
+            msg["To"] = recipient
+
+            smtp_server = os.getenv("SMTP_SERVER")
+            port = int(os.getenv("SMTP_PORT", 465))
+            context = ssl.create_default_context()
+
+            with smtplib.SMTP_SSL(
+                smtp_server,
+                port,
+                context=context
+            ) as server:
+                server.login(sender_email, password)
+                server.send_message(msg)
+
+            self.logger.info("Email успешно отправлен.")
+
+        except Exception:
+            self.logger.exception("Ошибка при отправке email.")
+            raise
+
+    def generate_email(self, metrics, today):
+        return f"""Уважаемые коллеги,
+
+Направляем вам агрегированную статистику использования грейдера
+(редактора кода) за {today}.
+
+Основные показатели за день:
+Общее количество попыток решения задач: {metrics['attempts_total']}
+Количество успешных попыток: {metrics['submits_correct']}
+Количество неуспешных попыток: {metrics['submits_incorrect']}
+Количество запусков: {metrics['runs']}
+Количество уникальных пользователей (DAU): {metrics['DAU']}
+
+Где найти данные:
+Полная таблица с детализированной статистикой доступна в Google Sheets:
+https://docs.google.com/spreadsheets/d/1DI481YmiSMLgTj36GxObdCjtlp1RwbEUll80wnfLYO8/edit?usp=sharing
+
+Данные в таблице обновляются ежедневно в 12:00 после завершения обработки.
+
+Логи работы скрипта хранятся за последние 3 дня в папке grades_logs.
+
+Спасибо за внимание!
+
+С уважением,
+Анна
+Аналитик данных"""
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    logger = Logger().setup_logging()
+    db_manager = None
+
+    try:
+        # Дата запроса к API: текущая дата минус два календарных года
+        api_date = datetime.today() - relativedelta(years=2)
+
+        START = api_date.strftime("%Y-%m-%d 00:00:00.000000")
+        END = api_date.strftime("%Y-%m-%d 23:59:59.999999")
+
+        logger.info(
+            f"Период запроса к API: {START} — {END}"
+        )
+
+        # Создание объектов
+        api_client = APIClient(
+            client=os.getenv("CLIENT"),
+            client_key=os.getenv("CLIENT_KEY"),
+            api_url=os.getenv("API_URL"),
+            logger=logger
+        )
+
+        processor = DataProcessor(logger=logger)
+
+        db_manager = DatabaseManager(
+            host=os.getenv("DB_HOST"),
+            port=os.getenv("DB_PORT"),
+            database=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            logger=logger
+        )
+
+        report_gen = ReportGenerator(logger=logger)
+        notifier = NotificationService(logger=logger)
+
+        # Получение данных из API
+        logger.info("Отправляем запрос к API грейдера...")
+
+        raw_data = api_client.fetch_data(START, END)
+
+        if not raw_data:
+            raise ValueError("API не вернул данные.")
+
+        # Обработка и валидация данных
+        logger.info("Начинаем обработку и валидацию данных...")
+
+        processed_data = []
+        skipped_records = 0
+
+        for record in raw_data:
+            try:
+                parsed_record = processor.parse(record)
+                processor.validate_record(parsed_record)
+                processed_data.append(parsed_record)
+
+            except Exception:
+                skipped_records += 1
+                continue
+
+        logger.info(
+            f"Обработка завершена. "
+            f"Успешно: {len(processed_data)}, "
+            f"пропущено: {skipped_records}."
+        )
+
+        if not processed_data:
+            raise ValueError(
+                "Не удалось обработать ни одной записи."
+            )
+
+        # Загрузка данных в PostgreSQL
+        logger.info("Загружаем данные в PostgreSQL...")
+
+        db_manager.insert_records(processed_data)
+
+        logger.info("Данные успешно загружены в PostgreSQL.")
+
+        # Формирование отчёта
+        logger.info("Формируем ежедневный отчёт...")
+
+        report_metrics = report_gen.aggregate_daily_metrics(
+            processed_data
+        )
+
+        # Выгрузка в Google Sheets
+        report_gen.export_to_sheets(
+            report_metrics,
+            os.getenv("GOOGLE_CREDENTIALS"),
+            os.getenv("SHEET_ID")
+        )
+
+        logger.info(
+            "Отчёт сформирован и выгружен в Google Sheets."
+        )
+
+        # Отправка email
+        logger.info("Отправляем отчёт по почте...")
+
+        notifier.send_email(
+            os.getenv("EMAIL_SENDER"),
+            os.getenv("EMAIL_PASSWORD"),
+            os.getenv("EMAIL_RECIPIENT"),
+            report_metrics
+        )
+
+        logger.info("Письмо успешно отправлено.")
+
+    except Exception:
+        logger.exception("Произошла ошибка в ETL-процессе.")
+        raise
+
+    finally:
+        if db_manager is not None:
+            db_manager.close()
+
+        logger.info("Работа скрипта завершена.")
+
+
+if __name__ == "__main__":
+    main()
